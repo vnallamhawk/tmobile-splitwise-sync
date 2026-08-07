@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+token.json
+client_secret*.json
+.state.json
+
+# Real personal data -- see the committed *.example.* files for the template.
+config/people.json
+test/fixtures/*.pdf
+!test/fixtures/.gitkeep

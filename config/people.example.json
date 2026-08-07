@@ -1,0 +1,16 @@
+{
+  "rakeshPhone": "(555) 000-0001",
+  "wearablePhone": "(555) 000-0099",
+  "people": [
+    { "phone": "(555) 000-0001", "name": "Alex Payer", "splitwiseEmail": "alex@example.com" },
+    { "phone": "(555) 000-0002", "name": "Blair Member", "splitwiseEmail": "blair@example.com" },
+    { "phone": "(555) 000-0003", "name": "Casey Member", "splitwiseEmail": "casey@example.com" },
+    { "phone": "(555) 000-0004", "name": "Drew Member", "splitwiseEmail": "drew@example.com" },
+    { "phone": "(555) 000-0005", "name": "Family Member (absorbed by Alex)" },
+    { "phone": "(555) 000-0006", "name": "Family Member (absorbed by Blair)" }
+  ],
+  "familyFold": {
+    "(555) 000-0005": "(555) 000-0001",
+    "(555) 000-0006": "(555) 000-0002"
+  }
+}
