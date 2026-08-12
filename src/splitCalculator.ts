@@ -57,11 +57,17 @@ export function computeSplits(bill: BillData, config: PeopleConfig): CategorySpl
       names.set(email, name);
     };
 
-    // 1: itemized per-line amounts (voice + wearable), folded through family/wearable rules.
-    for (const line of [...voiceLines, ...wearableLines]) {
+    // 1: itemized per-line amounts, folded through the family-fold rules.
+    // Wearable charges are deliberately excluded here -- they're entirely the payer's own
+    // device on their own line, a different kind of charge than shared voice-line plan costs
+    // (T-Mobile itself bills them as a separate "N WEARABLE = $X" line item, distinct from
+    // "N VOICE LINES = $Y"). They're never added to a posted Splitwise expense at all, so the
+    // payer's own cost is silently absorbed outside of Splitwise bookkeeping entirely, matching
+    // the $335 (voice-lines-only) convention rather than $347 (voice lines + wearable).
+    for (const line of voiceLines) {
       const value = line[key];
       if (typeof value !== "number" || value === 0) continue;
-      const bearer = line.lineType === "Wearable" ? payer : resolveBearer(config, line.phone);
+      const bearer = resolveBearer(config, line.phone);
       addContribution(bearer.splitwiseEmail!, bearer.name, toCents(value));
     }
 
@@ -78,11 +84,16 @@ export function computeSplits(bill: BillData, config: PeopleConfig): CategorySpl
       }
     }
 
+    const wearableCents = wearableLines.reduce((sum, line) => {
+      const value = line[key];
+      return sum + (typeof value === "number" ? toCents(value) : 0);
+    }, 0);
+
     const totalCents = Array.from(contributionsCents.values()).reduce((a, b) => a + b, 0);
-    const billTotalCents = toCents(bill.totals[key]);
-    if (totalCents !== billTotalCents) {
+    const expectedCents = toCents(bill.totals[key]) - wearableCents;
+    if (totalCents !== expectedCents) {
       throw new Error(
-        `${key} split (${totalCents}c) doesn't match bill total (${billTotalCents}c) -- parsing or split logic is off`
+        `${key} split (${totalCents}c) doesn't match bill total minus wearable (${expectedCents}c) -- parsing or split logic is off`
       );
     }
 

@@ -14,15 +14,15 @@ describe("computeSplits (synthetic fixture)", () => {
     }
   });
 
-  it("Plans: splits the $300 account base across 5 included lines, folds the two family lines into Alex/Blair, and folds the wearable + the family line's own itemized $30 charge into Alex", () => {
+  it("Plans: splits the $300 account base across 5 included lines, folds the two family lines into Alex/Blair, folds the family line's own itemized $30 charge into Alex, and excludes the $12 wearable entirely (it's Alex's own device, never posted)", () => {
     const [plans] = computeSplits(sampleBill, samplePeopleConfig);
     expect(plans.category).toBe("plans");
     expect(plans.title).toBe("Jun 9 - jul 8 plans");
-    expect(plans.total).toBe(342);
+    expect(plans.total).toBe(330); // $342 bill total minus the excluded $12 wearable
     expect(plans.personalOnly).toBe(false);
 
-    // Alex: his own $60 base share + family's itemized $30 + wearable $12 = $102
-    expect(shareFor(plans.owedShares, "alex@example.com")).toBe(102);
+    // Alex: his own $60 base share + family's itemized $30 = $90 (wearable excluded)
+    expect(shareFor(plans.owedShares, "alex@example.com")).toBe(90);
     // Blair: her own $60 base share + family's $60 base share = $120
     expect(shareFor(plans.owedShares, "blair@example.com")).toBe(120);
     // Casey and Drew: plain $60 base shares
