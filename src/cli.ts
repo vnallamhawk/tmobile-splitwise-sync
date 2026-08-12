@@ -1,32 +1,13 @@
 import "dotenv/config";
 import fs from "node:fs";
-import path from "node:path";
 import readline from "node:readline/promises";
 import { parseBillPdf } from "./parseBill";
 import { computeSplits, CategorySplit } from "./splitCalculator";
 import { findLatestBill } from "./gmail";
-import { findGroupByName, resolveUserIdsByEmail, createExpense } from "./splitwise";
+import { findGroupByName, resolveUserIdsByEmail, createExpense, getExistingExpenseTitles } from "./splitwise";
 import { peopleConfig } from "../config/people";
 
-const STATE_PATH = path.resolve(".state.json");
 const GROUP_NAME = "T-Mobile";
-
-interface State {
-  // periodKey -> categories already successfully posted to Splitwise for that bill period.
-  // Splitwise's per-day expense-creation cap means a single run might not post everything;
-  // tracking per-category (not just per-period) lets a later run pick up exactly what's left
-  // without re-posting anything or needing to know the exact daily limit up front.
-  periods: Record<string, { postedCategories: string[] }>;
-}
-
-function loadState(): State {
-  if (!fs.existsSync(STATE_PATH)) return { periods: {} };
-  return JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
-}
-
-function saveState(state: State) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-}
 
 function printDryRun(splits: CategorySplit[]) {
   console.log("\n=== Dry run: what would be posted to Splitwise ===");
@@ -52,10 +33,10 @@ async function main() {
   const fileFlagIndex = args.indexOf("--file");
   const filePath = fileFlagIndex !== -1 ? args[fileFlagIndex + 1] : undefined;
   const dryRunOnly = args.includes("--dry-run");
+  const yes = args.includes("--yes"); // skip the confirmation prompt, for scheduled/unattended runs
 
   let pdfBuffer: Buffer;
   let sourceLabel: string;
-  let gmailMessageId: string | undefined;
 
   if (filePath) {
     pdfBuffer = fs.readFileSync(filePath);
@@ -64,12 +45,11 @@ async function main() {
     console.log("Searching Gmail for the latest T-Mobile bill...");
     const bill = await findLatestBill();
     if (!bill) {
-      console.error("No T-Mobile bill email found. Adjust the search query in src/gmail.ts if needed.");
-      process.exit(1);
+      console.log("No T-Mobile bill email found (nothing new to do).");
+      return;
     }
     pdfBuffer = bill.pdfBuffer;
     sourceLabel = `Gmail message ${bill.messageId} (${bill.filename})`;
-    gmailMessageId = bill.messageId;
   }
 
   console.log(`Parsing bill from ${sourceLabel}...`);
@@ -84,28 +64,9 @@ async function main() {
     return;
   }
 
-  const state = loadState();
-  const periodKey = `${bill.period.start.toISOString()}_${bill.period.end.toISOString()}`;
-  const alreadyPosted = state.periods[periodKey]?.postedCategories ?? [];
-
   const postable = splits.filter((s) => !s.personalOnly && s.owedShares.length > 0);
-  const toPost = postable.filter((s) => !alreadyPosted.includes(s.category));
-
-  if (postable.length > 0 && toPost.length === 0) {
-    console.log(`Already fully posted for ${bill.period.label} (${alreadyPosted.join(", ")}). Nothing left to do.`);
-    return;
-  }
   if (postable.length === 0) {
     console.log("Nothing to post -- every category this month is personal-only.");
-    return;
-  }
-  if (alreadyPosted.length > 0) {
-    console.log(`Already posted for ${bill.period.label}: ${alreadyPosted.join(", ")}. Remaining: ${toPost.map((s) => s.category).join(", ")}.`);
-  }
-
-  const proceed = await confirm(`Post ${toPost.length} expense(s) to the "${GROUP_NAME}" Splitwise group?`);
-  if (!proceed) {
-    console.log("Aborted -- nothing was posted.");
     return;
   }
 
@@ -113,8 +74,38 @@ async function main() {
   const group = await findGroupByName(GROUP_NAME);
   const userIdByEmail = resolveUserIdsByEmail(group);
 
+  // Splitwise itself is the source of truth for "already posted" -- a scheduled/CI run has no
+  // persistent local disk between runs, so we check by exact expense title instead of local state.
+  // This also naturally handles resuming after a partial run (e.g. daily rate limit hit).
+  const existingTitles = await getExistingExpenseTitles(group.id);
+  const toPost = postable.filter((s) => !existingTitles.has(s.title));
+
+  if (toPost.length === 0) {
+    console.log(`Already fully posted for ${bill.period.label}. Nothing left to do.`);
+    return;
+  }
+  const alreadyPostedCount = postable.length - toPost.length;
+  if (alreadyPostedCount > 0) {
+    console.log(`${alreadyPostedCount} categor${alreadyPostedCount === 1 ? "y" : "ies"} already posted for ${bill.period.label}. Remaining: ${toPost.map((s) => s.category).join(", ")}.`);
+  }
+
+  if (!yes) {
+    const proceed = await confirm(`Post ${toPost.length} expense(s) to the "${GROUP_NAME}" Splitwise group?`);
+    if (!proceed) {
+      console.log("Aborted -- nothing was posted.");
+      return;
+    }
+  }
+
   const created: { id: number; description: string }[] = [];
+  const stillPending: CategorySplit[] = [];
+  let stopEarly = false;
+
   for (const split of toPost) {
+    if (stopEarly) {
+      stillPending.push(split);
+      continue;
+    }
     const owedShares = split.owedShares.map((share) => {
       const userId = userIdByEmail.get(share.email.toLowerCase());
       if (!userId) {
@@ -135,20 +126,17 @@ async function main() {
       });
       console.log(`Posted "${result.description}" (expense #${result.id})`);
       created.push(result);
-
-      alreadyPosted.push(split.category);
-      state.periods[periodKey] = { postedCategories: alreadyPosted };
-      saveState(state); // save immediately so partial progress survives a later failure/crash
     } catch (err) {
       console.error(`\nFailed to post "${split.title}" -- likely Splitwise's daily rate limit: ${err instanceof Error ? err.message : err}`);
-      break; // don't keep hammering the API once one call fails
+      stopEarly = true;
+      stillPending.push(split);
     }
   }
 
-  const stillPending = postable.filter((s) => !alreadyPosted.includes(s.category));
   console.log(`\n${created.length} expense(s) posted this run.`);
   if (stillPending.length > 0) {
-    console.log(`Still pending for ${bill.period.label}: ${stillPending.map((s) => s.category).join(", ")}. Run \`npm run sync\` again (e.g. tomorrow) to post the rest.`);
+    console.log(`Still pending for ${bill.period.label}: ${stillPending.map((s) => s.category).join(", ")}. The next scheduled/manual run will pick these up automatically.`);
+    process.exitCode = 1; // signal partial failure so a CI schedule surfaces it (e.g. GitHub's failed-run email)
   } else {
     console.log("All categories for this bill period are now posted.");
   }

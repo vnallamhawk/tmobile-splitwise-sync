@@ -74,6 +74,18 @@ export async function findGroupByName(name: string): Promise<SplitwiseGroup> {
   return group;
 }
 
+/**
+ * Titles of non-deleted expenses already in the group (most recent `limit`). Used for
+ * idempotency instead of local state, since a scheduled/CI run has no persistent disk between
+ * runs -- Splitwise itself is the source of truth for what's already been posted.
+ */
+export async function getExistingExpenseTitles(groupId: number, limit = 50): Promise<Set<string>> {
+  const data = await request<{ expenses: any[] }>(
+    `/get_expenses?group_id=${groupId}&limit=${limit}`
+  );
+  return new Set(data.expenses.filter((e) => !e.deleted_at).map((e) => e.description));
+}
+
 export function resolveUserIdsByEmail(group: SplitwiseGroup): Map<string, number> {
   const map = new Map<string, number>();
   for (const member of group.members) {
