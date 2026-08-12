@@ -12,11 +12,15 @@ const STATE_PATH = path.resolve(".state.json");
 const GROUP_NAME = "T-Mobile";
 
 interface State {
-  processedPeriods: string[]; // e.g. "Jun 09, 2026 - Jul 08, 2026"
+  // periodKey -> categories already successfully posted to Splitwise for that bill period.
+  // Splitwise's per-day expense-creation cap means a single run might not post everything;
+  // tracking per-category (not just per-period) lets a later run pick up exactly what's left
+  // without re-posting anything or needing to know the exact daily limit up front.
+  periods: Record<string, { postedCategories: string[] }>;
 }
 
 function loadState(): State {
-  if (!fs.existsSync(STATE_PATH)) return { processedPeriods: [] };
+  if (!fs.existsSync(STATE_PATH)) return { periods: {} };
   return JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
 }
 
@@ -82,20 +86,21 @@ async function main() {
 
   const state = loadState();
   const periodKey = `${bill.period.start.toISOString()}_${bill.period.end.toISOString()}`;
-  if (state.processedPeriods.includes(periodKey)) {
-    const proceed = await confirm(
-      `This bill period (${bill.period.label}) was already posted to Splitwise before. Post again anyway?`
-    );
-    if (!proceed) {
-      console.log("Aborted.");
-      return;
-    }
-  }
+  const alreadyPosted = state.periods[periodKey]?.postedCategories ?? [];
 
-  const toPost = splits.filter((s) => !s.personalOnly && s.owedShares.length > 0);
-  if (toPost.length === 0) {
+  const postable = splits.filter((s) => !s.personalOnly && s.owedShares.length > 0);
+  const toPost = postable.filter((s) => !alreadyPosted.includes(s.category));
+
+  if (postable.length > 0 && toPost.length === 0) {
+    console.log(`Already fully posted for ${bill.period.label} (${alreadyPosted.join(", ")}). Nothing left to do.`);
+    return;
+  }
+  if (postable.length === 0) {
     console.log("Nothing to post -- every category this month is personal-only.");
     return;
+  }
+  if (alreadyPosted.length > 0) {
+    console.log(`Already posted for ${bill.period.label}: ${alreadyPosted.join(", ")}. Remaining: ${toPost.map((s) => s.category).join(", ")}.`);
   }
 
   const proceed = await confirm(`Post ${toPost.length} expense(s) to the "${GROUP_NAME}" Splitwise group?`);
@@ -120,20 +125,33 @@ async function main() {
     const paidByUserId = userIdByEmail.get(split.paidByEmail.toLowerCase());
     if (!paidByUserId) throw new Error(`Payer ${split.paidByEmail} not found in Splitwise group`);
 
-    const result = await createExpense({
-      groupId: group.id,
-      description: split.title,
-      total: split.total,
-      paidByUserId,
-      owedShares,
-    });
-    console.log(`Posted "${result.description}" (expense #${result.id})`);
-    created.push(result);
+    try {
+      const result = await createExpense({
+        groupId: group.id,
+        description: split.title,
+        total: split.total,
+        paidByUserId,
+        owedShares,
+      });
+      console.log(`Posted "${result.description}" (expense #${result.id})`);
+      created.push(result);
+
+      alreadyPosted.push(split.category);
+      state.periods[periodKey] = { postedCategories: alreadyPosted };
+      saveState(state); // save immediately so partial progress survives a later failure/crash
+    } catch (err) {
+      console.error(`\nFailed to post "${split.title}" -- likely Splitwise's daily rate limit: ${err instanceof Error ? err.message : err}`);
+      break; // don't keep hammering the API once one call fails
+    }
   }
 
-  state.processedPeriods.push(periodKey);
-  saveState(state);
-  console.log(`\nDone. ${created.length} expense(s) posted.`);
+  const stillPending = postable.filter((s) => !alreadyPosted.includes(s.category));
+  console.log(`\n${created.length} expense(s) posted this run.`);
+  if (stillPending.length > 0) {
+    console.log(`Still pending for ${bill.period.label}: ${stillPending.map((s) => s.category).join(", ")}. Run \`npm run sync\` again (e.g. tomorrow) to post the rest.`);
+  } else {
+    console.log("All categories for this bill period are now posted.");
+  }
 }
 
 main().catch((err) => {

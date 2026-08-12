@@ -96,7 +96,14 @@ export async function createExpense(input: CreateExpenseInput): Promise<CreateEx
   params.set("currency_code", "USD");
   params.set("split_equally", "false");
 
-  input.owedShares.forEach((share, i) => {
+  // The payer must appear in the users array with paid_share = total even when their own
+  // owed_share is $0 (e.g. a category nobody but them fronted but someone else fully owes) --
+  // otherwise Splitwise sees paid shares summing to less than the cost and rejects the expense.
+  const users = input.owedShares.some((s) => s.userId === input.paidByUserId)
+    ? input.owedShares
+    : [...input.owedShares, { userId: input.paidByUserId, amount: 0 }];
+
+  users.forEach((share, i) => {
     params.set(`users__${i}__user_id`, String(share.userId));
     params.set(`users__${i}__paid_share`, share.userId === input.paidByUserId ? input.total.toFixed(2) : "0.00");
     params.set(`users__${i}__owed_share`, share.amount.toFixed(2));

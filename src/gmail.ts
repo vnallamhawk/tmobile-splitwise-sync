@@ -37,12 +37,16 @@ function findPdfAttachmentPart(
 
 /**
  * Finds the newest Gmail message matching `query` with a PDF attachment and downloads it.
- * Default query targets T-Mobile's monthly "BillSummary.pdf" attachment -- verify this matches
- * your inbox on the first real run (`gmail.users.messages.list` in the Gmail UI search bar uses
- * the same query syntax) and adjust here if T-Mobile's naming differs.
+ *
+ * The attachment is named e.g. "August 11, 2026BillSummary.pdf" -- the year and "BillSummary"
+ * are glued together with no space, so Gmail's tokenizer treats "2026BillSummary" as a single
+ * word and a search for "BillSummary" alone won't match it (confirmed empirically). The date
+ * portion also changes every month, so we can't match on the literal filename anyway. Instead
+ * this matches on what's stable every month: shared from the T-Mobile app to yourself (`from:me`),
+ * with a PDF attachment, mentioning "t-mobile" somewhere in the message.
  */
 export async function findLatestBill(
-  query = "filename:BillSummary.pdf newer_than:45d"
+  query = "from:me has:attachment filename:pdf t-mobile newer_than:10d"
 ): Promise<BillEmail | null> {
   const gmail = getClient();
   const list = await gmail.users.messages.list({ userId: "me", q: query, maxResults: 5 });
