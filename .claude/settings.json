@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit)",
+      "Bash(npm test *)",
+      "Bash(npx tsx src/cli.ts --dry-run)",
+      "Bash(gh secret list)"
+    ]
+  }
+}
